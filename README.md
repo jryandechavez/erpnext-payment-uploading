@@ -2,12 +2,35 @@
 
 Frappe/ERPNext v15 Desk Page for reviewing cheque allocations from CSV/XLSX before creating draft Payment Entries.
 
-## Install
+## Recommended installation
+
+Run as a user with permission to manage the Bench (normally `root` on a production server):
 
 ```bash
-bench get-app git@github.com:jryandechavez/erpnext-payment-uploading.git
+curl -fsSL https://raw.githubusercontent.com/jryandechavez/erpnext-payment-uploading/codex/payment-upload/install.sh \
+  -o /tmp/install-erpnext-payment-uploading.sh
+sudo bash /tmp/install-erpnext-payment-uploading.sh your-site.example.com
+```
+
+The installer:
+
+- backs up and normalizes `sites/apps.txt` before `bench get-app`;
+- prevents concatenated or duplicate app names;
+- skips the unnecessary asset build for this standard Desk Page;
+- safely resumes a partially cloned installation;
+- installs, migrates, clears cache, and restarts the Bench.
+
+The default Bench path is `/home/frappe/frappe-bench`. Pass a different path as the second argument if necessary.
+
+## Manual installation
+
+```bash
+sed -i -e '$a\' sites/apps.txt
+bench get-app --skip-assets --branch codex/payment-upload https://github.com/jryandechavez/erpnext-payment-uploading.git
 bench --site your-dev-site install-app erpnext_payment_uploading
-bench build --app erpnext_payment_uploading
+bench --site your-dev-site migrate
+bench --site your-dev-site clear-cache
+bench restart
 ```
 
 Open `/app/payment-upload`. The expected columns are `check #`, `check date`, `invoice #`, `invoice amount`, `ewt1%`, and `check amount`.
