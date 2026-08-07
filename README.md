@@ -36,3 +36,5 @@ bench restart
 Open `/app/payment-upload`. The expected columns are `check #`, `check date`, `invoice #`, `invoice amount`, `ewt1%`, and `check amount`.
 
 The page checks live Sales Invoice outstanding balances, enforces one customer per cheque, and creates draft Payment Entries only after review. Company, bank account, mode of payment, and EWT account are selected on the page.
+
+The preview and validation use the exact `Sales Invoice.customer` value. `customer_name` is not used to group invoices because separate Customer records can share the same display name.

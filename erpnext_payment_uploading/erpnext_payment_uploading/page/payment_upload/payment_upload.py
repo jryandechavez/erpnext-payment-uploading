@@ -48,8 +48,13 @@ def preview(file_url):
             errors.append(_("Sales Invoice has no outstanding balance"))
         if invoice and uploaded_by_invoice[row.invoice_no] > Decimal(str(invoice.outstanding_amount or 0)):
             errors.append(_("Uploaded invoice amount exceeds the current outstanding balance"))
-        if len(customers_by_cheque.get(row.cheque_no, set())) > 1:
-            errors.append(_("One cheque can only contain invoices for one customer"))
+        cheque_customers = sorted(customers_by_cheque.get(row.cheque_no, set()))
+        if len(cheque_customers) > 1:
+            errors.append(
+                _("One cheque can only contain invoices for one customer. Found: {0}").format(
+                    ", ".join(cheque_customers)
+                )
+            )
         if abs(row.invoice_amount - row.ewt_amount - row.cheque_amount) > Decimal("0.02"):
             errors.append(_("Check amount does not equal invoice amount less EWT"))
         if invoice and abs(row.invoice_amount - Decimal(str(invoice.outstanding_amount or 0))) > Decimal("0.02"):

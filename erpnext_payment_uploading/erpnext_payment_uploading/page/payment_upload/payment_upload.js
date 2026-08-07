@@ -67,7 +67,7 @@ class PaymentUpload {
 		const esc = frappe.utils.escape_html;
 		const rows = this.rows.map((r) => `<tr class="${r.status === "Invalid" ? "text-danger" : ""}">
 			<td>${r.row_no}</td><td>${esc(r.cheque_no || "")}</td><td>${esc(r.cheque_date || "")}</td>
-			<td>${esc(r.invoice_no || "")}</td><td>${esc(r.customer_name || r.customer || "")}</td>
+			<td>${esc(r.invoice_no || "")}</td><td>${esc(r.customer || "")}</td>
 			<td class="text-right">${format_currency(r.outstanding, r.currency)}</td>
 			<td class="text-right">${format_currency(r.invoice_amount, r.currency)}</td>
 			<td class="text-right">${format_currency(r.ewt_amount, r.currency)}</td>
