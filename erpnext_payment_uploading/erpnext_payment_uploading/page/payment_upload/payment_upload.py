@@ -24,12 +24,8 @@ def preview(file_url):
             fields=["name", "customer", "customer_name", "outstanding_amount", "currency", "docstatus"],
         )
     }
-    customers_by_cheque = {}
     uploaded_by_invoice = {}
     for row in rows:
-        invoice = invoices.get(row.invoice_no)
-        if invoice and row.cheque_no:
-            customers_by_cheque.setdefault(row.cheque_no, set()).add(invoice.customer)
         uploaded_by_invoice[row.invoice_no] = uploaded_by_invoice.get(row.invoice_no, Decimal("0")) + row.invoice_amount
 
     result = []
@@ -48,13 +44,6 @@ def preview(file_url):
             errors.append(_("Sales Invoice has no outstanding balance"))
         if invoice and uploaded_by_invoice[row.invoice_no] > Decimal(str(invoice.outstanding_amount or 0)):
             errors.append(_("Uploaded invoice amount exceeds the current outstanding balance"))
-        cheque_customers = sorted(customers_by_cheque.get(row.cheque_no, set()))
-        if len(cheque_customers) > 1:
-            errors.append(
-                _("One cheque can only contain invoices for one customer. Found: {0}").format(
-                    ", ".join(cheque_customers)
-                )
-            )
         if abs(row.invoice_amount - row.ewt_amount - row.cheque_amount) > Decimal("0.02"):
             errors.append(_("Check amount does not equal invoice amount less EWT"))
         if invoice and abs(row.invoice_amount - Decimal(str(invoice.outstanding_amount or 0))) > Decimal("0.02"):
@@ -74,6 +63,7 @@ def preview(file_url):
                 "message": "; ".join(errors + warnings),
             }
         )
+    result.sort(key=lambda row: (row.get("customer") or "", row.get("cheque_no") or "", row.get("row_no") or 0))
     return {"rows": result, "invalid_rows": sum(r["status"] == "Invalid" for r in result)}
 
 
@@ -84,26 +74,33 @@ def create_payment_entries(rows, company, paid_to, mode_of_payment="Cheque", ewt
     if not rows or not company or not paid_to:
         frappe.throw(_("Rows, Company, and Bank Account are required."))
 
+    input_rows = [frappe._dict(value) for value in rows]
+    invoice_names = list({row.invoice_no for row in input_rows})
+    all_invoices = {
+        row.name: row
+        for row in frappe.get_all(
+            "Sales Invoice",
+            filters={"name": ["in", invoice_names], "docstatus": 1, "company": company},
+            fields=["name", "customer", "outstanding_amount", "currency"],
+        )
+    }
+    if len(all_invoices) != len(invoice_names):
+        frappe.throw(_("One or more invoices are missing, not submitted, or belong to another company."))
+
+    # Customer is always resolved from Sales Invoice. The hierarchy is
+    # Customer -> Cheque # -> invoice allocations.
     groups = OrderedDict()
-    for value in rows:
-        row = frappe._dict(value)
-        groups.setdefault(_clean_id(row.cheque_no), []).append(row)
+    for row in sorted(
+        input_rows,
+        key=lambda value: (all_invoices[value.invoice_no].customer, _clean_id(value.cheque_no), value.row_no or 0),
+    ):
+        key = (all_invoices[row.invoice_no].customer, _clean_id(row.cheque_no))
+        groups.setdefault(key, []).append(row)
 
     created = []
-    for cheque_no, cheque_rows in groups.items():
+    for (customer, cheque_no), cheque_rows in groups.items():
         invoice_names = list({row.invoice_no for row in cheque_rows})
-        invoices = {
-            row.name: row
-            for row in frappe.get_all(
-                "Sales Invoice",
-                filters={"name": ["in", invoice_names], "docstatus": 1, "company": company},
-                fields=["name", "customer", "outstanding_amount", "currency"],
-            )
-        }
-        if len(invoices) != len(invoice_names):
-            frappe.throw(_("Cheque {0}: invoices are missing, not submitted, or belong to another company.").format(cheque_no))
-        if len({row.customer for row in invoices.values()}) != 1:
-            frappe.throw(_("Cheque {0}: invoices must belong to one customer.").format(cheque_no))
+        invoices = {name: all_invoices[name] for name in invoice_names}
 
         allocations, gross, net, ewt = [], Decimal("0"), Decimal("0"), Decimal("0")
         by_invoice = {}
@@ -127,7 +124,7 @@ def create_payment_entries(rows, company, paid_to, mode_of_payment="Cheque", ewt
                 "payment_type": "Receive",
                 "company": company,
                 "party_type": "Customer",
-                "party": next(iter({row.customer for row in invoices.values()})),
+                "party": customer,
                 "posting_date": getdate(first.get("posting_date") or nowdate()),
                 "mode_of_payment": mode_of_payment or "Cheque",
                 "reference_no": cheque_no,
