@@ -1,0 +1,2 @@
+recursive-include erpnext_payment_uploading *.css *.csv *.html *.ico *.js *.json *.md *.png *.py *.svg *.txt
+recursive-exclude erpnext_payment_uploading *.pyc

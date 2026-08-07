@@ -1,0 +1,9 @@
+*.py[cod]
+__pycache__/
+.DS_Store
+node_modules
+inspect_actual_payment_workbook.mjs
+tt_order_checker.*
+tt_order_soring.*
+tt_payment_upload.*
+TT_PAYMENT_UPLOAD_SETUP.md
