@@ -18,22 +18,47 @@ class PaymentUpload {
 			<div class="debit-section mt-4"></div>
 		</div>`).appendTo(this.page.main);
 		const $row = this.$body.find(".row");
-		this.company = this.control($row, "Link", "company", __("Company"), true, "Company");
-		this.posting_date = this.control($row, "Date", "posting_date", __("Posting Date"), true);
+		this.company = this.control($row, "Link", "company", __("Company"), true, "Company", {
+			onchange: () => this.update_file_enabled(),
+		});
+		this.company.set_value("Tic & Terry");
+		this.posting_date = this.control($row, "Date", "posting_date", __("Posting Date"), true, null, {
+			onchange: () => this.update_file_enabled(),
+		});
 		this.posting_date.set_value(frappe.datetime.get_today());
 		this.ewt_account = this.control($row, "Link", "ewt_account", __("EWT Account"), true, "Account", {
 			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0 } }),
-			onchange: () => this.update_balance_state(),
+			onchange: () => { this.update_file_enabled(); this.update_balance_state(); },
 		});
-		this.write_off = this.control($row, "Link", "write_off_account", __("Write-off Account"), false, "Account", {
+		this.ewt_account.set_value("EXPANDED WITHHOLDING TAX -WC 158 - TnT");
+		this.write_off = this.control($row, "Link", "write_off_account", __("Write-off Account"), true, "Account", {
 			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0 } }),
-			onchange: () => this.update_balance_state(),
+			onchange: () => { this.update_file_enabled(); this.update_balance_state(); },
+		});
+		this.write_off.set_value("Write Off - TnT");
+		this.debit_account = this.control($row, "Link", "debit_account", __("Check/Bank/Debit Account"), true, "Account", {
+			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0 } }),
+			onchange: () => this.update_file_enabled(),
+		});
+		this.check_amount = this.control($row, "Currency", "check_amount_received", __("Check/Bank/Debit Amount"), true, null, {
+			onchange: () => { this.update_file_enabled(); this.update_balance_state(); },
 		});
 		this.file = this.control($row, "Attach", "payment_file", __("CSV / XLSX File"), true, null, {
 			onchange: () => this.preview(),
 		});
+		this.file.df.read_only = 1;
+		this.file.refresh();
+		this.update_file_enabled();
 		this.create_button = this.page.add_inner_button(__("Create Journal Entries"), () => this.confirm_create());
 		this.create_button.addClass("btn-primary").prop("disabled", true);
+	}
+
+	update_file_enabled() {
+		if (!this.file) return;
+		const ready = [this.company, this.posting_date, this.write_off, this.ewt_account, this.debit_account, this.check_amount]
+			.every((field) => Boolean(field.get_value()));
+		this.file.df.read_only = ready ? 0 : 1;
+		this.file.refresh();
 	}
 
 	control(parent, fieldtype, fieldname, label, reqd, options, extra = {}) {
@@ -67,7 +92,8 @@ class PaymentUpload {
 		this.$body.find(".summary").html(
 			`<span class="indicator blue">${this.rows.length} ${__("Rows")}</span>
 			 <span class="indicator green">${valid} ${__("Ready")}</span>
-			 <span class="indicator red">${invalid} ${__("Blocked")}</span>`
+			 <span class="indicator red">${invalid} ${__("Blocked")}</span>
+			 <span class="batch-control"></span>`
 		);
 		const esc = frappe.utils.escape_html;
 		const rows = this.rows.map((r) => `<tr class="${r.status === "Invalid" ? "text-danger" : ""}" title="${esc(r.message || "")}">
@@ -94,7 +120,10 @@ class PaymentUpload {
 			if (!this.debit_rows.some((row) => row.cheque_no === cheque_no)) {
 				const cheque_rows = this.rows.filter((row) => row.cheque_no === cheque_no);
 				const supplied = cheque_rows.reduce((total, row) => total + flt(row.invoice_amount), 0);
-				this.debit_rows.push({ cheque_no, amount: supplied, role: __("Column E Debit"), controls: null });
+				this.debit_rows.push({
+					cheque_no, account: this.debit_account.get_value(), amount: supplied,
+					role: __("Check/Bank/Debit Account"), controls: null,
+				});
 			}
 		}
 	}
@@ -173,7 +202,10 @@ class PaymentUpload {
 
 	update_balance_state(invalid_rows) {
 		const invalid = invalid_rows ?? this.rows.filter((row) => row.status === "Invalid").length;
-		let balanced = Boolean(this.rows.length);
+		const uploaded_paid = Math.round((this.rows.reduce((sum, row) => sum + flt(row.invoice_amount), 0) + Number.EPSILON) * 100) / 100;
+		const expected_paid = flt(this.check_amount.get_value());
+		const batch_matches = Math.abs(uploaded_paid - expected_paid) < 0.005;
+		let balanced = Boolean(this.rows.length) && batch_matches;
 		for (const cheque_no of [...new Set(this.rows.map((row) => row.cheque_no))]) {
 			const invoice_credits = new Map();
 			this.rows.filter((row) => row.cheque_no === cheque_no)
@@ -195,11 +227,14 @@ class PaymentUpload {
 				${__("Invoice Credits")}: ${format_currency(credits)} ·
 				${__("Write-off")}: ${format_currency(Math.abs(difference))} ${difference >= 0 ? __("Credit") : __("Debit")}</span>`);
 		}
+		this.$body.find(".summary .batch-control").html(
+			`<span class="indicator ${batch_matches ? "green" : "red"}">${__("Entered Check Amount")}: ${format_currency(expected_paid)} · ${__("Uploaded Paid Total")}: ${format_currency(uploaded_paid)}</span>`
+		);
 		this.create_button.prop("disabled", invalid > 0 || !balanced);
 	}
 
 	confirm_create() {
-		for (const field of [this.company, this.posting_date, this.ewt_account, this.file]) {
+		for (const field of [this.company, this.posting_date, this.write_off, this.ewt_account, this.debit_account, this.check_amount, this.file]) {
 			if (!field.get_value()) {
 				frappe.msgprint(__("Please complete all required fields."));
 				return;
@@ -211,7 +246,7 @@ class PaymentUpload {
 				args: {
 					rows: this.rows, debits: this.get_debits(), company: this.company.get_value(),
 					posting_date: this.posting_date.get_value(), ewt_account: this.ewt_account.get_value(),
-					write_off_account: this.write_off.get_value(),
+					write_off_account: this.write_off.get_value(), check_amount_received: this.check_amount.get_value(),
 				},
 				freeze: true, freeze_message: __("Creating draft Journal Entries..."),
 			});

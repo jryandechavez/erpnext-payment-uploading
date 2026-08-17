@@ -70,14 +70,29 @@ def preview(file_url):
 
 
 @frappe.whitelist()
-def create_journal_entries(rows, debits, company, posting_date, ewt_account=None, write_off_account=None):
+def create_journal_entries(
+    rows,
+    debits,
+    company,
+    posting_date,
+    check_amount_received,
+    ewt_account=None,
+    write_off_account=None,
+):
     _require_create_permission()
     rows = frappe.parse_json(rows) if isinstance(rows, str) else rows
     debits = frappe.parse_json(debits) if isinstance(debits, str) else debits
-    if not rows or not debits or not company or not posting_date:
-        frappe.throw(_("Rows, debit entries, Company, and Posting Date are required."))
+    if not rows or not debits or not company or not posting_date or not check_amount_received:
+        frappe.throw(_("Rows, debit entries, Company, Posting Date, and Check Amount Received are required."))
 
     input_rows = [frappe._dict(value) for value in rows]
+    uploaded_paid_total = _money(sum((Decimal(str(row.invoice_amount)) for row in input_rows), Decimal("0")))
+    if uploaded_paid_total != _money(check_amount_received):
+        frappe.throw(
+            _("Check/Bank/Debit Amount ({0}) must equal uploaded Paid Amount total ({1}).").format(
+                _money(check_amount_received), uploaded_paid_total
+            )
+        )
     invoice_names = list({row.invoice_no for row in input_rows})
     all_invoices = {
         row.name: row

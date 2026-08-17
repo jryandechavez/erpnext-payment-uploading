@@ -43,4 +43,6 @@ For the headerless `Sheet1` upload layout, only columns B (cheque number), D (Sa
 
 The review table intentionally shows only Customer, Sales Invoice No, Customer Ref No (Sheet1 column B), Paid Amount, EWT, live Outstanding, and calculated Write-off. Validation notes appear separately below the table.
 
+Before file upload, Company, Posting Date, Write-off Account, EWT Account, Check/Bank/Debit Account, and Check/Bank/Debit Amount are required. Defaults are `Tic & Terry`, `Write Off - TnT`, and `EXPANDED WITHHOLDING TAX -WC 158 - TnT`. The entered debit amount is a batch control total and must equal the uploaded Paid Amount total.
+
 The preview and validation use the exact `Sales Invoice.customer` value. `customer_name` is not used to group invoices because separate Customer records can share the same display name.
