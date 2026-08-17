@@ -38,10 +38,25 @@ class PaymentUpload {
 		this.write_off.set_value("Write Off - TnT");
 		this.debit_account = this.control($row, "Link", "debit_account", __("Check/Bank/Debit Account"), true, "Account", {
 			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0 } }),
-			onchange: () => this.update_file_enabled(),
+			onchange: () => { this.apply_debit_defaults(); this.update_file_enabled(); },
 		});
 		this.check_amount = this.control($row, "Currency", "check_amount_received", __("Check/Bank/Debit Amount"), true, null, {
 			onchange: () => { this.update_file_enabled(); this.update_balance_state(); },
+		});
+		this.debit_party_type = this.control($row, "Select", "debit_party_type", __("Party Type"), true, "\nCustomer\nSupplier\nEmployee", {
+			onchange: () => {
+				if (this.debit_party) {
+					this.debit_party.df.options = this.debit_party_type.get_value() || "Customer";
+					this.debit_party.set_value("");
+					this.debit_party.refresh();
+				}
+				this.apply_debit_defaults();
+				this.update_file_enabled();
+			},
+		});
+		this.debit_party_type.set_value("Customer");
+		this.debit_party = this.control($row, "Link", "debit_party", __("Party"), true, "Customer", {
+			onchange: () => { this.apply_debit_defaults(); this.update_file_enabled(); },
 		});
 		this.file = this.control($row, "Attach", "payment_file", __("CSV / XLSX File"), true, null, {
 			onchange: () => this.preview(),
@@ -55,10 +70,30 @@ class PaymentUpload {
 
 	update_file_enabled() {
 		if (!this.file) return;
-		const ready = [this.company, this.posting_date, this.write_off, this.ewt_account, this.debit_account, this.check_amount]
+		const ready = [
+			this.company, this.posting_date, this.write_off, this.ewt_account, this.debit_account,
+			this.check_amount, this.debit_party_type, this.debit_party,
+		]
 			.every((field) => Boolean(field.get_value()));
 		this.file.df.read_only = ready ? 0 : 1;
 		this.file.refresh();
+	}
+
+	apply_debit_defaults() {
+		if (!this.debit_rows) return;
+		for (const row of this.debit_rows.filter((value) => value.role === __("Check/Bank/Debit Account"))) {
+			row.account = this.debit_account?.get_value() || "";
+			row.party_type = this.debit_party_type?.get_value() || "Customer";
+			row.party = this.debit_party?.get_value() || "";
+			if (row.controls) {
+				row.controls.account.set_value(row.account);
+				row.controls.party_type.set_value(row.party_type);
+				row.controls.party.df.options = row.party_type;
+				row.controls.party.set_value(row.party);
+				row.controls.party.refresh();
+			}
+		}
+		if (this.create_button) this.update_balance_state();
 	}
 
 	control(parent, fieldtype, fieldname, label, reqd, options, extra = {}) {
@@ -122,6 +157,7 @@ class PaymentUpload {
 				const supplied = cheque_rows.reduce((total, row) => total + flt(row.invoice_amount), 0);
 				this.debit_rows.push({
 					cheque_no, account: this.debit_account.get_value(), amount: supplied,
+					party_type: this.debit_party_type.get_value(), party: this.debit_party.get_value(),
 					role: __("Check/Bank/Debit Account"), controls: null,
 				});
 			}
@@ -201,6 +237,7 @@ class PaymentUpload {
 	}
 
 	update_balance_state(invalid_rows) {
+		if (!this.create_button) return;
 		const invalid = invalid_rows ?? this.rows.filter((row) => row.status === "Invalid").length;
 		const uploaded_paid = Math.round((this.rows.reduce((sum, row) => sum + flt(row.invoice_amount), 0) + Number.EPSILON) * 100) / 100;
 		const expected_paid = flt(this.check_amount.get_value());
@@ -234,7 +271,10 @@ class PaymentUpload {
 	}
 
 	confirm_create() {
-		for (const field of [this.company, this.posting_date, this.write_off, this.ewt_account, this.debit_account, this.check_amount, this.file]) {
+		for (const field of [
+			this.company, this.posting_date, this.write_off, this.ewt_account, this.debit_account,
+			this.check_amount, this.debit_party_type, this.debit_party, this.file,
+		]) {
 			if (!field.get_value()) {
 				frappe.msgprint(__("Please complete all required fields."));
 				return;
