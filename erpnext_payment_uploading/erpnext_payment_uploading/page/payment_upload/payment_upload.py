@@ -56,6 +56,11 @@ def preview(file_url):
                 "customer_name": invoice.customer_name if invoice else None,
                 "currency": invoice.currency if invoice else None,
                 "outstanding": flt(invoice.outstanding_amount) if invoice else 0,
+                "write_off_amount": float(
+                    _money(invoice.outstanding_amount) - _money(row.invoice_amount) - _money(row.ewt_amount)
+                )
+                if invoice
+                else 0,
                 "status": "Invalid" if errors else ("Warning" if warnings else "Valid"),
                 "message": "; ".join(errors + warnings),
             }

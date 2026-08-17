@@ -70,22 +70,20 @@ class PaymentUpload {
 			 <span class="indicator red">${invalid} ${__("Blocked")}</span>`
 		);
 		const esc = frappe.utils.escape_html;
-		const rows = this.rows.map((r) => `<tr class="${r.status === "Invalid" ? "text-danger" : ""}">
-			<td>${r.row_no}</td><td>${esc(r.cheque_no || "")}</td><td>${esc(r.cheque_date || "")}</td>
-			<td>${esc(r.invoice_no || "")}</td><td>${esc(r.customer || "")}</td>
-			<td class="text-right">${format_currency(r.outstanding, r.currency)}</td>
+		const rows = this.rows.map((r) => `<tr class="${r.status === "Invalid" ? "text-danger" : ""}" title="${esc(r.message || "")}">
+			<td>${esc(r.customer || "")}</td><td>${esc(r.invoice_no || "")}</td><td>${esc(r.cheque_no || "")}</td>
 			<td class="text-right">${format_currency(r.invoice_amount, r.currency)}</td>
-			<td class="text-right">${format_currency(r.basis_amount, r.currency)}</td>
 			<td class="text-right">${format_currency(r.ewt_amount, r.currency)}</td>
-			<td class="text-right">${format_currency(r.cheque_amount, r.currency)}</td>
-			<td class="text-right">${format_currency(r.difference_amount, r.currency)}</td>
-			<td>${esc(r.status)}</td><td>${esc(r.message || "")}</td></tr>`).join("");
+			<td class="text-right">${format_currency(r.outstanding, r.currency)}</td>
+			<td class="text-right">${format_currency(r.write_off_amount, r.currency)}</td></tr>`).join("");
+		const issues = this.rows.filter((r) => r.message).map((r) =>
+			`<li class="${r.status === "Invalid" ? "text-danger" : "text-warning"}">${esc(r.invoice_no)}: ${esc(r.message)}</li>`
+		).join("");
 		this.$body.find(".preview").html(`<div class="table-responsive"><table class="table table-bordered table-hover">
-			<thead><tr><th>${__("Row")}</th><th>${__("Cheque #")}</th><th>${__("Date")}</th><th>${__("Invoice #")}</th>
-			<th>${__("Customer")}</th><th>${__("Outstanding")}</th><th>${__("Column E")}</th><th>${__("Basis (G)")}</th>
-			<th>${__("EWT (H)")}</th><th>${__("Net (I)")}</th><th>${__("Difference (J)")}</th>
-			<th>${__("Status")}</th><th>${__("Message")}</th></tr></thead><tbody>${rows}</tbody>
-		</table></div>`);
+			<thead><tr><th>${__("Customer")}</th><th>${__("Sales Invoice No")}</th><th>${__("Customer Ref No")}</th>
+			<th>${__("Paid Amount")}</th><th>${__("EWT")}</th><th>${__("Outstanding")}</th><th>${__("Write-off")}</th>
+			</tr></thead><tbody>${rows}</tbody>
+		</table></div>${issues ? `<div class="mt-2"><strong>${__("Validation Notes")}</strong><ul>${issues}</ul></div>` : ""}`);
 		this.render_debits();
 	}
 

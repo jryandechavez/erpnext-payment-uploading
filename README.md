@@ -41,4 +41,6 @@ The Journal Entry header User Remark contains one tab-separated line per invoice
 
 For the headerless `Sheet1` upload layout, only columns B (cheque number), D (Sales Invoice), and E (amount) are required. The page calculates G–J as `G = E × 1.01`, `H = G × 1%`, `I = G − H`, and `J = E − I`. It prefills the paid debit from column E, sums column H per cheque, rounds EWT once to two decimals, and posts it to the selected EWT Account. Write-off is calculated only after the rounded paid, EWT, and live outstanding totals.
 
+The review table intentionally shows only Customer, Sales Invoice No, Customer Ref No (Sheet1 column B), Paid Amount, EWT, live Outstanding, and calculated Write-off. Validation notes appear separately below the table.
+
 The preview and validation use the exact `Sales Invoice.customer` value. `customer_name` is not used to group invoices because separate Customer records can share the same display name.
