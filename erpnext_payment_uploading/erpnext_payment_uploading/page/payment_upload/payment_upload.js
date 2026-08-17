@@ -71,13 +71,16 @@ class PaymentUpload {
 			<td>${esc(r.invoice_no || "")}</td><td>${esc(r.customer || "")}</td>
 			<td class="text-right">${format_currency(r.outstanding, r.currency)}</td>
 			<td class="text-right">${format_currency(r.invoice_amount, r.currency)}</td>
+			<td class="text-right">${format_currency(r.basis_amount, r.currency)}</td>
 			<td class="text-right">${format_currency(r.ewt_amount, r.currency)}</td>
 			<td class="text-right">${format_currency(r.cheque_amount, r.currency)}</td>
+			<td class="text-right">${format_currency(r.difference_amount, r.currency)}</td>
 			<td>${esc(r.status)}</td><td>${esc(r.message || "")}</td></tr>`).join("");
 		this.$body.find(".preview").html(`<div class="table-responsive"><table class="table table-bordered table-hover">
 			<thead><tr><th>${__("Row")}</th><th>${__("Cheque #")}</th><th>${__("Date")}</th><th>${__("Invoice #")}</th>
-			<th>${__("Customer")}</th><th>${__("Outstanding")}</th><th>${__("Invoice Amount")}</th><th>${__("EWT")}</th>
-			<th>${__("Cheque Amount")}</th><th>${__("Status")}</th><th>${__("Message")}</th></tr></thead><tbody>${rows}</tbody>
+			<th>${__("Customer")}</th><th>${__("Outstanding")}</th><th>${__("Column E")}</th><th>${__("Basis (G)")}</th>
+			<th>${__("EWT (H)")}</th><th>${__("Net (I)")}</th><th>${__("Difference (J)")}</th>
+			<th>${__("Status")}</th><th>${__("Message")}</th></tr></thead><tbody>${rows}</tbody>
 		</table></div>`);
 		this.render_debits();
 	}
@@ -87,9 +90,11 @@ class PaymentUpload {
 		this.debit_rows = this.debit_rows.filter((row) => cheques.includes(row.cheque_no));
 		for (const cheque_no of cheques) {
 			if (!this.debit_rows.some((row) => row.cheque_no === cheque_no)) {
-				const net = this.rows.filter((row) => row.cheque_no === cheque_no)
-					.reduce((total, row) => total + flt(row.cheque_amount), 0);
-				this.debit_rows.push({ cheque_no, amount: net, controls: null });
+				const cheque_rows = this.rows.filter((row) => row.cheque_no === cheque_no);
+				const supplied = cheque_rows.reduce((total, row) => total + flt(row.invoice_amount), 0);
+				const ewt = cheque_rows.reduce((total, row) => total + flt(row.ewt_amount), 0);
+				this.debit_rows.push({ cheque_no, amount: supplied, role: __("Column E Debit"), controls: null });
+				this.debit_rows.push({ cheque_no, amount: ewt, role: __("EWT Debit"), controls: null });
 			}
 		}
 	}
@@ -122,6 +127,7 @@ class PaymentUpload {
 
 	render_debit_row($parent, row) {
 		const $row = $('<div class="row align-items-end border-top pt-2 mb-2"></div>').appendTo($parent);
+		$(`<div class="col-12 text-muted small mb-1">${frappe.utils.escape_html(row.role || __("Additional Debit"))}</div>`).appendTo($row);
 		const make = (fieldtype, fieldname, label, options, width = "col-lg-2") => {
 			const $cell = $(`<div class="col-sm-6 ${width}"></div>`).appendTo($row);
 			return frappe.ui.form.make_control({ parent: $cell, df: { fieldtype, fieldname, label, options }, render_input: true });
@@ -161,6 +167,7 @@ class PaymentUpload {
 			party_type: row.controls?.party_type.get_value() || row.party_type || "",
 			party: row.controls?.party.get_value() || row.party || "",
 			amount: flt(row.controls?.amount.get_value() ?? row.amount),
+			remark: row.role || "",
 		}));
 	}
 

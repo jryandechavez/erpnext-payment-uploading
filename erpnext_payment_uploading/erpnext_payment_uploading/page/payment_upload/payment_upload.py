@@ -38,8 +38,8 @@ def preview(file_url):
             errors.append(_("Sales Invoice is not submitted"))
         elif flt(invoice.outstanding_amount) <= 0:
             errors.append(_("Sales Invoice has no outstanding balance"))
-        if abs(row.invoice_amount - row.ewt_amount - row.cheque_amount) > Decimal("0.02"):
-            errors.append(_("Check amount does not equal invoice amount less EWT"))
+        if abs(row.basis_amount - row.ewt_amount - row.cheque_amount) > Decimal("0.02"):
+            errors.append(_("Calculated net amount does not equal basis less EWT"))
         if invoice and abs(row.invoice_amount - Decimal(str(invoice.outstanding_amount or 0))) > Decimal("0.02"):
             warnings.append(_("Uploaded amount differs from current outstanding"))
 
@@ -47,8 +47,10 @@ def preview(file_url):
             {
                 **row,
                 "invoice_amount": float(row.invoice_amount),
+                "basis_amount": float(row.basis_amount),
                 "ewt_amount": float(row.ewt_amount),
                 "cheque_amount": float(row.cheque_amount),
+                "difference_amount": float(row.difference_amount),
                 "customer": invoice.customer if invoice else None,
                 "customer_name": invoice.customer_name if invoice else None,
                 "currency": invoice.currency if invoice else None,
@@ -241,6 +243,10 @@ def _read_rows(file_url):
         from openpyxl import load_workbook
 
         workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        if "Sheet1" in workbook.sheetnames:
+            sheet1 = workbook["Sheet1"]
+            if _header(sheet1.cell(row=3, column=4).value) in {"si", "invoice", "invoice #"}:
+                return _read_sheet1_columns(sheet1)
         sheet = workbook["july 24 2026"] if "july 24 2026" in workbook.sheetnames else workbook.active
         values = list(sheet.iter_rows(values_only=True))
         header_index = next((i for i, values_row in enumerate(values) if "invoice #" in {_header(v) for v in values_row}), None)
@@ -267,8 +273,46 @@ def _read_rows(file_url):
                 cheque_date=str(getdate(value.get("check date") or value.get("cheque date"))) if value.get("check date") or value.get("cheque date") else None,
                 invoice_no=_clean_id(value.get("invoice #")),
                 invoice_amount=invoice_amount,
+                basis_amount=invoice_amount,
                 ewt_amount=ewt_amount,
                 cheque_amount=cheque_amount,
+                difference_amount=invoice_amount - cheque_amount,
+            )
+        )
+    return rows
+
+
+def _read_sheet1_columns(sheet):
+    """Read Sheet1 where only B (cheque), D (invoice), and E (amount) are supplied."""
+    rows = []
+    cheque_date = sheet.cell(row=2, column=2).value
+    for index in range(4, sheet.max_row + 1):
+        cheque_no = sheet.cell(row=index, column=2).value
+        invoice_no = sheet.cell(row=index, column=4).value
+        source_amount = sheet.cell(row=index, column=5).value
+        if cheque_no in (None, "") and invoice_no in (None, "") and source_amount in (None, ""):
+            continue
+        if cheque_no in (None, "") or invoice_no in (None, "") or source_amount in (None, ""):
+            frappe.throw(_("Sheet1 row {0} must contain columns B, D, and E.").format(index))
+        try:
+            invoice_amount = _decimal(source_amount)
+        except InvalidOperation:
+            frappe.throw(_("Sheet1 row {0} contains an invalid amount in column E.").format(index))
+        basis_amount = invoice_amount * Decimal("1.01")
+        ewt_amount = basis_amount * Decimal("0.01")
+        cheque_amount = basis_amount - ewt_amount
+        difference_amount = invoice_amount - cheque_amount
+        rows.append(
+            frappe._dict(
+                row_no=index,
+                cheque_no=_clean_id(cheque_no),
+                cheque_date=str(getdate(cheque_date)) if cheque_date else None,
+                invoice_no=_clean_id(invoice_no),
+                invoice_amount=invoice_amount,
+                basis_amount=basis_amount,
+                ewt_amount=ewt_amount,
+                cheque_amount=cheque_amount,
+                difference_amount=difference_amount,
             )
         )
     return rows
