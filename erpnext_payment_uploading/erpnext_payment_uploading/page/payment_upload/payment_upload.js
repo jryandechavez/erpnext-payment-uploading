@@ -21,6 +21,10 @@ class PaymentUpload {
 		this.company = this.control($row, "Link", "company", __("Company"), true, "Company");
 		this.posting_date = this.control($row, "Date", "posting_date", __("Posting Date"), true);
 		this.posting_date.set_value(frappe.datetime.get_today());
+		this.ewt_account = this.control($row, "Link", "ewt_account", __("EWT Account"), true, "Account", {
+			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0 } }),
+			onchange: () => this.update_balance_state(),
+		});
 		this.write_off = this.control($row, "Link", "write_off_account", __("Write-off Account"), false, "Account", {
 			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0 } }),
 			onchange: () => this.update_balance_state(),
@@ -92,9 +96,7 @@ class PaymentUpload {
 			if (!this.debit_rows.some((row) => row.cheque_no === cheque_no)) {
 				const cheque_rows = this.rows.filter((row) => row.cheque_no === cheque_no);
 				const supplied = cheque_rows.reduce((total, row) => total + flt(row.invoice_amount), 0);
-				const ewt = cheque_rows.reduce((total, row) => total + flt(row.ewt_amount), 0);
 				this.debit_rows.push({ cheque_no, amount: supplied, role: __("Column E Debit"), controls: null });
-				this.debit_rows.push({ cheque_no, amount: ewt, role: __("EWT Debit"), controls: null });
 			}
 		}
 	}
@@ -179,22 +181,27 @@ class PaymentUpload {
 			this.rows.filter((row) => row.cheque_no === cheque_no)
 				.forEach((row) => invoice_credits.set(row.invoice_no, flt(row.outstanding)));
 			const credits = [...invoice_credits.values()].reduce((sum, amount) => sum + amount, 0);
-			const debits = this.get_debits().filter((row) => row.cheque_no === cheque_no).reduce((sum, row) => sum + flt(row.amount), 0);
+			const paid_debits = this.get_debits().filter((row) => row.cheque_no === cheque_no).reduce((sum, row) => sum + flt(row.amount), 0);
+			const ewt = Math.round((this.rows.filter((row) => row.cheque_no === cheque_no)
+				.reduce((sum, row) => sum + flt(row.ewt_amount), 0) + Number.EPSILON) * 100) / 100;
+			const debits = paid_debits + ewt;
 			const difference = debits - credits;
 			const can_write_off = Math.abs(difference) < 0.005 || Boolean(this.write_off.get_value());
+			const has_ewt_account = !ewt || Boolean(this.ewt_account.get_value());
 			const complete = this.get_debits().filter((row) => row.cheque_no === cheque_no)
 				.every((row) => row.account && row.amount > 0 && ((!row.party_type && !row.party) || (row.party_type && row.party)));
-			balanced = balanced && can_write_off && complete;
+			balanced = balanced && can_write_off && has_ewt_account && complete;
 			this.$body.find(".debit-section .frappe-card").filter((_, card) => $(card).find("strong").text().endsWith(cheque_no))
 				.find(".balance").html(`<span class="indicator ${can_write_off ? "green" : "orange"}">
-				${__("Debits")}: ${format_currency(debits)} · ${__("Invoice Credits")}: ${format_currency(credits)} ·
+				${__("Paid Debits")}: ${format_currency(paid_debits)} · ${__("EWT")}: ${format_currency(ewt)} ·
+				${__("Invoice Credits")}: ${format_currency(credits)} ·
 				${__("Write-off")}: ${format_currency(Math.abs(difference))} ${difference >= 0 ? __("Credit") : __("Debit")}</span>`);
 		}
 		this.create_button.prop("disabled", invalid > 0 || !balanced);
 	}
 
 	confirm_create() {
-		for (const field of [this.company, this.posting_date, this.file]) {
+		for (const field of [this.company, this.posting_date, this.ewt_account, this.file]) {
 			if (!field.get_value()) {
 				frappe.msgprint(__("Please complete all required fields."));
 				return;
@@ -205,7 +212,8 @@ class PaymentUpload {
 				method: "erpnext_payment_uploading.erpnext_payment_uploading.page.payment_upload.payment_upload.create_journal_entries",
 				args: {
 					rows: this.rows, debits: this.get_debits(), company: this.company.get_value(),
-					posting_date: this.posting_date.get_value(), write_off_account: this.write_off.get_value(),
+					posting_date: this.posting_date.get_value(), ewt_account: this.ewt_account.get_value(),
+					write_off_account: this.write_off.get_value(),
 				},
 				freeze: true, freeze_message: __("Creating draft Journal Entries..."),
 			});

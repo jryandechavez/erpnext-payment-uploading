@@ -39,6 +39,6 @@ The page checks live Sales Invoice outstanding balances and creates one draft Jo
 
 The Journal Entry header User Remark contains one tab-separated line per invoice: cheque number, posting date, cheque date, uploaded invoice number, a blank column, and invoice amount.
 
-For the headerless `Sheet1` upload layout, only columns B (cheque number), D (Sales Invoice), and E (amount) are required. The page calculates G–J as `G = E × 1.01`, `H = G × 1%`, `I = G − H`, and `J = E − I`. It prefills one debit from column E and a second debit from calculated EWT (column H); users select the accounts and may add more debit rows.
+For the headerless `Sheet1` upload layout, only columns B (cheque number), D (Sales Invoice), and E (amount) are required. The page calculates G–J as `G = E × 1.01`, `H = G × 1%`, `I = G − H`, and `J = E − I`. It prefills the paid debit from column E, sums column H per cheque, rounds EWT once to two decimals, and posts it to the selected EWT Account. Write-off is calculated only after the rounded paid, EWT, and live outstanding totals.
 
 The preview and validation use the exact `Sales Invoice.customer` value. `customer_name` is not used to group invoices because separate Customer records can share the same display name.

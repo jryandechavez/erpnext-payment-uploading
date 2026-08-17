@@ -1,7 +1,7 @@
 import csv
 import io
 from collections import OrderedDict
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import frappe
 from frappe import _
@@ -65,7 +65,7 @@ def preview(file_url):
 
 
 @frappe.whitelist()
-def create_journal_entries(rows, debits, company, posting_date, write_off_account=None):
+def create_journal_entries(rows, debits, company, posting_date, ewt_account=None, write_off_account=None):
     _require_create_permission()
     rows = frappe.parse_json(rows) if isinstance(rows, str) else rows
     debits = frappe.parse_json(debits) if isinstance(debits, str) else debits
@@ -97,6 +97,8 @@ def create_journal_entries(rows, debits, company, posting_date, write_off_accoun
 
     account_names = {row.get("account") for row in debits if row.get("account")}
     account_names.update(invoice.debit_to for invoice in all_invoices.values())
+    if ewt_account:
+        account_names.add(ewt_account)
     if write_off_account:
         account_names.add(write_off_account)
     account_currencies = {
@@ -154,19 +156,34 @@ def create_journal_entries(rows, debits, company, posting_date, write_off_accoun
         cheque_debits = debits_by_cheque.get(cheque_no, [])
         if not cheque_debits:
             frappe.throw(_("Cheque {0}: add at least one debit entry.").format(cheque_no))
-        debit_total = sum((_decimal(row.amount) for row in cheque_debits), Decimal("0"))
+        paid_debit_total = sum((_money(row.amount) for row in cheque_debits), Decimal("0"))
+        ewt_total = _money(sum((Decimal(str(row.ewt_amount)) for row in cheque_rows), Decimal("0")))
+        if ewt_total and not ewt_account:
+            frappe.throw(_("Cheque {0}: select an EWT Account.").format(cheque_no))
+        debit_total = paid_debit_total + ewt_total
         accounts = []
         for debit in cheque_debits:
             account_row = {
                 "account": debit.account,
                 "account_currency": company_currency,
                 "exchange_rate": 1,
-                "debit_in_account_currency": float(_decimal(debit.amount)),
+                "debit_in_account_currency": float(_money(debit.amount)),
                 "user_remark": debit.get("remark") or _("Cheque {0}").format(cheque_no),
             }
             if debit.get("party_type") and debit.get("party"):
                 account_row.update({"party_type": debit.party_type, "party": debit.party})
             accounts.append(account_row)
+
+        if ewt_total:
+            accounts.append(
+                {
+                    "account": ewt_account,
+                    "account_currency": company_currency,
+                    "exchange_rate": 1,
+                    "debit_in_account_currency": float(ewt_total),
+                    "user_remark": _("EWT for cheque {0}").format(cheque_no),
+                }
+            )
 
         for name, amount in credit_by_invoice.items():
             invoice = invoices[name]
@@ -340,6 +357,10 @@ def _clean_id(value):
 
 def _decimal(value):
     return Decimal(str(value or 0).replace(",", ""))
+
+
+def _money(value):
+    return _decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def _display_date(value):
