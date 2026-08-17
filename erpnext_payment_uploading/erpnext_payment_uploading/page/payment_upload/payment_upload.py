@@ -22,6 +22,7 @@ def preview(file_url):
             "Sales Invoice",
             filters={"name": ["in", names]},
             fields=["name", "customer", "customer_name", "outstanding_amount", "currency", "docstatus", "debit_to"],
+            limit_page_length=0,
         )
     }
     result = []
@@ -79,6 +80,7 @@ def create_journal_entries(rows, debits, company, posting_date, write_off_accoun
             "Sales Invoice",
             filters={"name": ["in", invoice_names], "docstatus": 1, "company": company},
             fields=["name", "customer", "outstanding_amount", "currency", "debit_to"],
+            limit_page_length=0,
         )
     }
     if len(all_invoices) != len(invoice_names):
@@ -103,6 +105,7 @@ def create_journal_entries(rows, debits, company, posting_date, write_off_accoun
             "Account",
             filters={"name": ["in", list(account_names)], "company": company, "is_group": 0},
             fields=["name", "account_currency"],
+            limit_page_length=0,
         )
     }
     if len(account_currencies) != len(account_names):
@@ -286,10 +289,15 @@ def _read_sheet1_columns(sheet):
     """Read Sheet1 where only B (cheque), D (invoice), and E (amount) are supplied."""
     rows = []
     cheque_date = sheet.cell(row=2, column=2).value
-    for index in range(4, sheet.max_row + 1):
-        cheque_no = sheet.cell(row=index, column=2).value
-        invoice_no = sheet.cell(row=index, column=4).value
-        source_amount = sheet.cell(row=index, column=5).value
+    # Streaming is essential here. Random-access ``sheet.cell`` calls on a
+    # read-only worksheet repeatedly scan its XML and become extremely slow
+    # for production files with more than a thousand rows.
+    for index, values in enumerate(
+        sheet.iter_rows(min_row=4, max_col=5, values_only=True), start=4
+    ):
+        cheque_no = values[1]
+        invoice_no = values[3]
+        source_amount = values[4]
         if cheque_no in (None, "") and invoice_no in (None, "") and source_amount in (None, ""):
             continue
         if cheque_no in (None, "") or invoice_no in (None, "") or source_amount in (None, ""):
