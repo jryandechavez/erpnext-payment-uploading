@@ -149,18 +149,13 @@ class PaymentUpload {
 	}
 
 	sync_debit_rows() {
-		const cheques = [...new Set(this.rows.map((row) => row.cheque_no))];
-		this.debit_rows = this.debit_rows.filter((row) => cheques.includes(row.cheque_no));
-		for (const cheque_no of cheques) {
-			if (!this.debit_rows.some((row) => row.cheque_no === cheque_no)) {
-				const cheque_rows = this.rows.filter((row) => row.cheque_no === cheque_no);
-				const supplied = cheque_rows.reduce((total, row) => total + flt(row.invoice_amount), 0);
-				this.debit_rows.push({
-					cheque_no, account: this.debit_account.get_value(), amount: supplied,
-					party_type: this.debit_party_type.get_value(), party: this.debit_party.get_value(),
-					role: __("Check/Bank/Debit Account"), controls: null,
-				});
-			}
+		this.debit_rows = this.debit_rows.filter((row) => row.cheque_no === "__batch__");
+		if (!this.debit_rows.length) {
+			this.debit_rows.push({
+				cheque_no: "__batch__", account: this.debit_account.get_value(), amount: flt(this.check_amount.get_value()),
+				party_type: this.debit_party_type.get_value(), party: this.debit_party.get_value(),
+				role: __("Check/Bank/Debit Account"), controls: null,
+			});
 		}
 	}
 
@@ -174,18 +169,17 @@ class PaymentUpload {
 		if (!this.rows.length) return;
 		$section.append(`<div class="d-flex justify-content-between align-items-center mb-2">
 			<h4 class="m-0">${__("Debit Entries and Balance Check")}</h4>
-			<span class="text-muted">${__("Add bank, EWT, receivable, or other debit lines per cheque.")}</span>
+			<span class="text-muted">${__("One balanced Journal Entry will be created for this upload.")}</span>
 		</div>`);
-		for (const cheque_no of [...new Set(this.rows.map((row) => row.cheque_no))]) {
-			const $card = $(`<div class="frappe-card p-3 mb-3">
-				<div class="d-flex justify-content-between"><strong>${__("Cheque")} ${frappe.utils.escape_html(cheque_no)}</strong>
+		const cheque_no = "__batch__";
+		const $card = $(`<div class="frappe-card p-3 mb-3">
+				<div class="d-flex justify-content-between"><strong>${__("Batch Journal Entry")}</strong>
 				<button class="btn btn-xs btn-default add-debit">${__("Add Debit")}</button></div>
 				<div class="debit-rows mt-2"></div><div class="balance mt-2"></div>
 			</div>`).appendTo($section);
-			$card.find(".add-debit").on("click", () => this.add_debit(cheque_no));
-			for (const row of this.debit_rows.filter((value) => value.cheque_no === cheque_no)) {
-				this.render_debit_row($card.find(".debit-rows"), row);
-			}
+		$card.find(".add-debit").on("click", () => this.add_debit(cheque_no));
+		for (const row of this.debit_rows) {
+			this.render_debit_row($card.find(".debit-rows"), row);
 		}
 		this.update_balance_state();
 	}
@@ -243,23 +237,18 @@ class PaymentUpload {
 		const expected_paid = flt(this.check_amount.get_value());
 		const batch_matches = Math.abs(uploaded_paid - expected_paid) < 0.005;
 		let balanced = Boolean(this.rows.length) && batch_matches;
-		for (const cheque_no of [...new Set(this.rows.map((row) => row.cheque_no))]) {
-			const invoice_credits = new Map();
-			this.rows.filter((row) => row.cheque_no === cheque_no)
-				.forEach((row) => invoice_credits.set(row.invoice_no, flt(row.outstanding)));
+		{
+			const invoice_credits = new Map(this.rows.map((row) => [row.invoice_no, flt(row.outstanding)]));
 			const credits = [...invoice_credits.values()].reduce((sum, amount) => sum + amount, 0);
-			const paid_debits = this.get_debits().filter((row) => row.cheque_no === cheque_no).reduce((sum, row) => sum + flt(row.amount), 0);
-			const ewt = Math.round((this.rows.filter((row) => row.cheque_no === cheque_no)
-				.reduce((sum, row) => sum + flt(row.ewt_amount), 0) + Number.EPSILON) * 100) / 100;
+			const paid_debits = this.get_debits().reduce((sum, row) => sum + flt(row.amount), 0);
+			const ewt = Math.round((this.rows.reduce((sum, row) => sum + flt(row.ewt_amount), 0) + Number.EPSILON) * 100) / 100;
 			const debits = paid_debits + ewt;
 			const difference = debits - credits;
 			const can_write_off = Math.abs(difference) < 0.005 || Boolean(this.write_off.get_value());
 			const has_ewt_account = !ewt || Boolean(this.ewt_account.get_value());
-			const complete = this.get_debits().filter((row) => row.cheque_no === cheque_no)
-				.every((row) => row.account && row.amount > 0 && ((!row.party_type && !row.party) || (row.party_type && row.party)));
+			const complete = this.get_debits().every((row) => row.account && row.amount > 0 && ((!row.party_type && !row.party) || (row.party_type && row.party)));
 			balanced = balanced && can_write_off && has_ewt_account && complete;
-			this.$body.find(".debit-section .frappe-card").filter((_, card) => $(card).find("strong").text().endsWith(cheque_no))
-				.find(".balance").html(`<span class="indicator ${can_write_off ? "green" : "orange"}">
+			this.$body.find(".debit-section .balance").html(`<span class="indicator ${can_write_off ? "green" : "orange"}">
 				${__("Paid Debits")}: ${format_currency(paid_debits)} · ${__("EWT")}: ${format_currency(ewt)} ·
 				${__("Invoice Credits")}: ${format_currency(credits)} ·
 				${__("Write-off")}: ${format_currency(Math.abs(difference))} ${difference >= 0 ? __("Credit") : __("Debit")}</span>`);
