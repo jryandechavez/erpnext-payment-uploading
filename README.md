@@ -1,6 +1,6 @@
-# ERPNext Payment Uploading
+# ERPNext Cheque Journal Entry Uploading
 
-Frappe/ERPNext v15 Desk Page for reviewing cheque allocations from CSV/XLSX before creating draft Payment Entries.
+Frappe/ERPNext v15 Desk Page for reviewing cheque allocations from CSV/XLSX before creating draft Journal Entries.
 
 ## Recommended installation
 
@@ -35,6 +35,6 @@ bench restart
 
 Open `/app/payment-upload`. The expected columns are `check #`, `check date`, `invoice #`, `invoice amount`, `ewt1%`, and `check amount`.
 
-The page checks live Sales Invoice outstanding balances and creates draft Payment Entries only after review. Rows are grouped first by `Sales Invoice.customer`, then by cheque number, so a reused cheque number under different customers creates separate drafts. Company, bank account, mode of payment, and EWT account are selected on the page.
+The page checks live Sales Invoice outstanding balances and creates draft Journal Entries only after review. Rows are grouped first by `Sales Invoice.customer`, then by cheque number, so a reused cheque number under different customers creates separate drafts. Each Journal Entry debits the bank for the net cheque, debits EWT, and credits each invoice's receivable account with the Sales Invoice reference.
 
 The preview and validation use the exact `Sales Invoice.customer` value. `customer_name` is not used to group invoices because separate Customer records can share the same display name.

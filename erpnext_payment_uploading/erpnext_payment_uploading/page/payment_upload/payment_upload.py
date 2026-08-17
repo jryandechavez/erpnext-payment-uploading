@@ -21,7 +21,7 @@ def preview(file_url):
         for row in frappe.get_all(
             "Sales Invoice",
             filters={"name": ["in", names]},
-            fields=["name", "customer", "customer_name", "outstanding_amount", "currency", "docstatus"],
+            fields=["name", "customer", "customer_name", "outstanding_amount", "currency", "docstatus", "debit_to"],
         )
     }
     uploaded_by_invoice = {}
@@ -68,10 +68,10 @@ def preview(file_url):
 
 
 @frappe.whitelist()
-def create_payment_entries(rows, company, paid_to, mode_of_payment="Cheque", ewt_account=None):
+def create_journal_entries(rows, company, bank_account, ewt_account=None):
     _require_create_permission()
     rows = frappe.parse_json(rows) if isinstance(rows, str) else rows
-    if not rows or not company or not paid_to:
+    if not rows or not company or not bank_account:
         frappe.throw(_("Rows, Company, and Bank Account are required."))
 
     input_rows = [frappe._dict(value) for value in rows]
@@ -81,11 +81,42 @@ def create_payment_entries(rows, company, paid_to, mode_of_payment="Cheque", ewt
         for row in frappe.get_all(
             "Sales Invoice",
             filters={"name": ["in", invoice_names], "docstatus": 1, "company": company},
-            fields=["name", "customer", "outstanding_amount", "currency"],
+            fields=["name", "customer", "outstanding_amount", "currency", "debit_to"],
         )
     }
     if len(all_invoices) != len(invoice_names):
         frappe.throw(_("One or more invoices are missing, not submitted, or belong to another company."))
+
+    company_currency = frappe.get_cached_value("Company", company, "default_currency")
+    invoice_currencies = {invoice.currency for invoice in all_invoices.values()}
+    if invoice_currencies != {company_currency}:
+        frappe.throw(
+            _("This uploader currently supports company-currency invoices only ({0}). Found: {1}").format(
+                company_currency, ", ".join(sorted(invoice_currencies))
+            )
+        )
+
+    account_names = {bank_account}
+    account_names.update(invoice.debit_to for invoice in all_invoices.values())
+    if ewt_account:
+        account_names.add(ewt_account)
+    account_currencies = {
+        row.name: row.account_currency or company_currency
+        for row in frappe.get_all(
+            "Account",
+            filters={"name": ["in", list(account_names)], "company": company, "is_group": 0},
+            fields=["name", "account_currency"],
+        )
+    }
+    if len(account_currencies) != len(account_names):
+        frappe.throw(_("One or more selected accounts are invalid for company {0}.").format(company))
+    foreign_accounts = [name for name, currency in account_currencies.items() if currency != company_currency]
+    if foreign_accounts:
+        frappe.throw(
+            _("This uploader currently supports company-currency accounts only. Check: {0}").format(
+                ", ".join(foreign_accounts)
+            )
+        )
 
     # Customer is always resolved from Sales Invoice. The hierarchy is
     # Customer -> Cheque # -> invoice allocations.
@@ -102,7 +133,7 @@ def create_payment_entries(rows, company, paid_to, mode_of_payment="Cheque", ewt
         invoice_names = list({row.invoice_no for row in cheque_rows})
         invoices = {name: all_invoices[name] for name in invoice_names}
 
-        allocations, gross, net, ewt = [], Decimal("0"), Decimal("0"), Decimal("0")
+        gross, net, ewt = Decimal("0"), Decimal("0"), Decimal("0")
         by_invoice = {}
         for row in cheque_rows:
             amount = Decimal(str(row.invoice_amount))
@@ -113,33 +144,65 @@ def create_payment_entries(rows, company, paid_to, mode_of_payment="Cheque", ewt
         for name, amount in by_invoice.items():
             if amount <= 0 or amount > Decimal(str(invoices[name].outstanding_amount or 0)):
                 frappe.throw(_("Cheque {0}: invalid allocation for {1}.").format(cheque_no, name))
-            allocations.append({"reference_doctype": "Sales Invoice", "reference_name": name, "allocated_amount": float(amount)})
         if ewt and not ewt_account:
             frappe.throw(_("Cheque {0}: an EWT Account is required.").format(cheque_no))
+
+        if abs(gross - net - ewt) > Decimal("0.02"):
+            frappe.throw(_("Cheque {0}: invoice total must equal cheque amount plus EWT.").format(cheque_no))
+
+        accounts = [
+            {
+                "account": bank_account,
+                "account_currency": company_currency,
+                "exchange_rate": 1,
+                "debit_in_account_currency": float(net),
+                "user_remark": _("Cheque {0} - {1}").format(cheque_no, customer),
+            }
+        ]
+        if ewt:
+            accounts.append(
+                {
+                    "account": ewt_account,
+                    "account_currency": company_currency,
+                    "exchange_rate": 1,
+                    "debit_in_account_currency": float(ewt),
+                    "user_remark": _("EWT for cheque {0}").format(cheque_no),
+                }
+            )
+        for name, amount in by_invoice.items():
+            invoice = invoices[name]
+            accounts.append(
+                {
+                    "account": invoice.debit_to,
+                    "account_currency": company_currency,
+                    "exchange_rate": 1,
+                    "party_type": "Customer",
+                    "party": customer,
+                    "credit_in_account_currency": float(amount),
+                    "reference_type": "Sales Invoice",
+                    "reference_name": name,
+                    "user_remark": _("Cheque {0}").format(cheque_no),
+                }
+            )
 
         first = cheque_rows[0]
         doc = frappe.get_doc(
             {
-                "doctype": "Payment Entry",
-                "payment_type": "Receive",
+                "doctype": "Journal Entry",
+                "voucher_type": "Bank Entry",
                 "company": company,
-                "party_type": "Customer",
-                "party": customer,
                 "posting_date": getdate(first.get("posting_date") or nowdate()),
-                "mode_of_payment": mode_of_payment or "Cheque",
-                "reference_no": cheque_no,
-                "reference_date": getdate(first.cheque_date or nowdate()),
-                "paid_to": paid_to,
-                "paid_amount": float(gross),
-                "received_amount": float(net),
-                "references": allocations,
-                "deductions": ([{"account": ewt_account, "cost_center": frappe.get_cached_value("Company", company, "cost_center"), "amount": float(ewt)}] if ewt else []),
+                "cheque_no": cheque_no,
+                "cheque_date": getdate(first.cheque_date or nowdate()),
+                "user_remark": _("Customer {0}; cheque {1}; gross {2}; EWT {3}; net {4}").format(
+                    customer, cheque_no, gross, ewt, net
+                ),
+                "accounts": accounts,
             }
         )
-        doc.set_missing_values()
         doc.insert()
         created.append(doc.name)
-    return {"payment_entries": created, "count": len(created)}
+    return {"journal_entries": created, "count": len(created)}
 
 
 def _read_rows(file_url):
@@ -203,5 +266,5 @@ def _decimal(value):
 
 
 def _require_create_permission():
-    if not frappe.has_permission("Payment Entry", "create"):
-        frappe.throw(_("You do not have permission to create Payment Entries."), frappe.PermissionError)
+    if not frappe.has_permission("Journal Entry", "create"):
+        frappe.throw(_("You do not have permission to create Journal Entries."), frappe.PermissionError)

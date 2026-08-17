@@ -1,5 +1,5 @@
 frappe.pages["payment-upload"].on_page_load = (wrapper) => {
-	const page = frappe.ui.make_app_page({ parent: wrapper, title: __("Payment Upload"), single_column: true });
+	const page = frappe.ui.make_app_page({ parent: wrapper, title: __("Cheque Journal Entry Upload"), single_column: true });
 	new PaymentUpload(page);
 };
 
@@ -17,9 +17,7 @@ class PaymentUpload {
 		</div>`).appendTo(this.page.main);
 		const $row = this.$body.find(".row");
 		this.company = this.control($row, "Company", "company", __("Company"), true);
-		this.mode = this.control($row, "Link", "mode_of_payment", __("Mode of Payment"), true, "Mode of Payment");
-		this.mode.set_value("Cheque");
-		this.paid_to = this.control($row, "Link", "paid_to", __("Bank / Cash Account"), true, "Account", {
+		this.bank_account = this.control($row, "Link", "bank_account", __("Bank / Cash Account"), true, "Account", {
 			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0, account_type: ["in", ["Bank", "Cash"]] } }),
 		});
 		this.ewt = this.control($row, "Link", "ewt_account", __("EWT Account"), false, "Account", {
@@ -28,7 +26,7 @@ class PaymentUpload {
 		this.file = this.control($row, "Attach", "payment_file", __("CSV / XLSX File"), true, null, {
 			onchange: () => this.preview(),
 		});
-		this.create_button = this.page.add_inner_button(__("Create Draft Payment Entries"), () => this.confirm_create());
+		this.create_button = this.page.add_inner_button(__("Create Draft Journal Entries"), () => this.confirm_create());
 		this.create_button.addClass("btn-primary").prop("disabled", true);
 	}
 
@@ -81,7 +79,7 @@ class PaymentUpload {
 	}
 
 	confirm_create() {
-		for (const field of [this.company, this.mode, this.paid_to, this.file]) {
+		for (const field of [this.company, this.bank_account, this.file]) {
 			if (!field.get_value()) {
 				frappe.msgprint(__("Please complete all required fields."));
 				return;
@@ -91,16 +89,16 @@ class PaymentUpload {
 			frappe.msgprint(__("Select an EWT Account before creating entries."));
 			return;
 		}
-		frappe.confirm(__("Create one draft Payment Entry per cheque?"), async () => {
+		frappe.confirm(__("Create one draft Journal Entry per customer and cheque?"), async () => {
 			const { message } = await frappe.call({
-				method: "erpnext_payment_uploading.erpnext_payment_uploading.page.payment_upload.payment_upload.create_payment_entries",
+				method: "erpnext_payment_uploading.erpnext_payment_uploading.page.payment_upload.payment_upload.create_journal_entries",
 				args: {
-					rows: this.rows, company: this.company.get_value(), paid_to: this.paid_to.get_value(),
-					mode_of_payment: this.mode.get_value(), ewt_account: this.ewt.get_value(),
+					rows: this.rows, company: this.company.get_value(), bank_account: this.bank_account.get_value(),
+					ewt_account: this.ewt.get_value(),
 				},
-				freeze: true, freeze_message: __("Creating draft Payment Entries..."),
+				freeze: true, freeze_message: __("Creating draft Journal Entries..."),
 			});
-			frappe.msgprint(__("Created {0} draft Payment Entries: {1}", [message.count, message.payment_entries.join(", ")]));
+			frappe.msgprint(__("Created {0} draft Journal Entries: {1}", [message.count, message.journal_entries.join(", ")]));
 		});
 	}
 }
