@@ -35,6 +35,8 @@ bench restart
 
 Open `/app/payment-upload`. The expected columns are `check #`, `check date`, `invoice #`, `invoice amount`, `ewt1%`, and `check amount`.
 
-The page checks live Sales Invoice outstanding balances and creates draft Journal Entries only after review. Rows are grouped first by `Sales Invoice.customer`, then by cheque number, so a reused cheque number under different customers creates separate drafts. Each Journal Entry debits the bank for the net cheque, debits EWT, and credits each invoice's receivable account with the Sales Invoice reference.
+The page checks live Sales Invoice outstanding balances and creates one draft Journal Entry per cheque only after review. Users can add multiple debit rows per cheque, including accounts and optional parties. Each invoice is credited to its own receivable account and exact `Sales Invoice.customer`; any remaining balance is posted to the selected write-off account. The completed draft opens in ERPNext for final review and submission.
+
+The Journal Entry header User Remark contains one tab-separated line per invoice: cheque number, posting date, cheque date, uploaded invoice number, a blank column, and invoice amount.
 
 The preview and validation use the exact `Sales Invoice.customer` value. `customer_name` is not used to group invoices because separate Customer records can share the same display name.

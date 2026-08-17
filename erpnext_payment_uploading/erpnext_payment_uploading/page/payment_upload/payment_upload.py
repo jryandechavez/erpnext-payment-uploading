@@ -24,10 +24,6 @@ def preview(file_url):
             fields=["name", "customer", "customer_name", "outstanding_amount", "currency", "docstatus", "debit_to"],
         )
     }
-    uploaded_by_invoice = {}
-    for row in rows:
-        uploaded_by_invoice[row.invoice_no] = uploaded_by_invoice.get(row.invoice_no, Decimal("0")) + row.invoice_amount
-
     result = []
     for row in rows:
         invoice = invoices.get(row.invoice_no)
@@ -42,8 +38,6 @@ def preview(file_url):
             errors.append(_("Sales Invoice is not submitted"))
         elif flt(invoice.outstanding_amount) <= 0:
             errors.append(_("Sales Invoice has no outstanding balance"))
-        if invoice and uploaded_by_invoice[row.invoice_no] > Decimal(str(invoice.outstanding_amount or 0)):
-            errors.append(_("Uploaded invoice amount exceeds the current outstanding balance"))
         if abs(row.invoice_amount - row.ewt_amount - row.cheque_amount) > Decimal("0.02"):
             errors.append(_("Check amount does not equal invoice amount less EWT"))
         if invoice and abs(row.invoice_amount - Decimal(str(invoice.outstanding_amount or 0))) > Decimal("0.02"):
@@ -68,11 +62,12 @@ def preview(file_url):
 
 
 @frappe.whitelist()
-def create_journal_entries(rows, company, bank_account, ewt_account=None):
+def create_journal_entries(rows, debits, company, posting_date, write_off_account=None):
     _require_create_permission()
     rows = frappe.parse_json(rows) if isinstance(rows, str) else rows
-    if not rows or not company or not bank_account:
-        frappe.throw(_("Rows, Company, and Bank Account are required."))
+    debits = frappe.parse_json(debits) if isinstance(debits, str) else debits
+    if not rows or not debits or not company or not posting_date:
+        frappe.throw(_("Rows, debit entries, Company, and Posting Date are required."))
 
     input_rows = [frappe._dict(value) for value in rows]
     invoice_names = list({row.invoice_no for row in input_rows})
@@ -96,10 +91,10 @@ def create_journal_entries(rows, company, bank_account, ewt_account=None):
             )
         )
 
-    account_names = {bank_account}
+    account_names = {row.get("account") for row in debits if row.get("account")}
     account_names.update(invoice.debit_to for invoice in all_invoices.values())
-    if ewt_account:
-        account_names.add(ewt_account)
+    if write_off_account:
+        account_names.add(write_off_account)
     account_currencies = {
         row.name: row.account_currency or company_currency
         for row in frappe.get_all(
@@ -118,58 +113,57 @@ def create_journal_entries(rows, company, bank_account, ewt_account=None):
             )
         )
 
-    # Customer is always resolved from Sales Invoice. The hierarchy is
-    # Customer -> Cheque # -> invoice allocations.
+    # Journal Entries are grouped by cheque. Each invoice credit uses the
+    # exact customer and receivable account from its Sales Invoice.
     groups = OrderedDict()
     for row in sorted(
         input_rows,
-        key=lambda value: (all_invoices[value.invoice_no].customer, _clean_id(value.cheque_no), value.row_no or 0),
+        key=lambda value: (_clean_id(value.cheque_no), value.row_no or 0),
     ):
-        key = (all_invoices[row.invoice_no].customer, _clean_id(row.cheque_no))
-        groups.setdefault(key, []).append(row)
+        groups.setdefault(_clean_id(row.cheque_no), []).append(row)
+
+    debits_by_cheque = {}
+    for raw_debit in debits:
+        debit = frappe._dict(raw_debit)
+        cheque_no = _clean_id(debit.cheque_no)
+        amount = _decimal(debit.amount)
+        if not cheque_no or not debit.account or amount <= 0:
+            frappe.throw(_("Every debit row requires a cheque number, account, and positive amount."))
+        debits_by_cheque.setdefault(cheque_no, []).append(debit)
 
     created = []
-    for (customer, cheque_no), cheque_rows in groups.items():
+    for cheque_no, cheque_rows in groups.items():
         invoice_names = list({row.invoice_no for row in cheque_rows})
         invoices = {name: all_invoices[name] for name in invoice_names}
 
-        gross, net, ewt = Decimal("0"), Decimal("0"), Decimal("0")
-        by_invoice = {}
+        invoice_total = Decimal("0")
+        credit_by_invoice = OrderedDict()
         for row in cheque_rows:
-            amount = Decimal(str(row.invoice_amount))
-            by_invoice[row.invoice_no] = by_invoice.get(row.invoice_no, Decimal("0")) + amount
-            gross += amount
-            net += Decimal(str(row.cheque_amount))
-            ewt += Decimal(str(row.ewt_amount))
-        for name, amount in by_invoice.items():
-            if amount <= 0 or amount > Decimal(str(invoices[name].outstanding_amount or 0)):
-                frappe.throw(_("Cheque {0}: invalid allocation for {1}.").format(cheque_no, name))
-        if ewt and not ewt_account:
-            frappe.throw(_("Cheque {0}: an EWT Account is required.").format(cheque_no))
+            if row.invoice_no not in credit_by_invoice:
+                outstanding = Decimal(str(invoices[row.invoice_no].outstanding_amount or 0))
+                if outstanding <= 0:
+                    frappe.throw(_("Cheque {0}: invoice {1} has no outstanding balance.").format(cheque_no, row.invoice_no))
+                credit_by_invoice[row.invoice_no] = outstanding
+                invoice_total += outstanding
 
-        if abs(gross - net - ewt) > Decimal("0.02"):
-            frappe.throw(_("Cheque {0}: invoice total must equal cheque amount plus EWT.").format(cheque_no))
-
-        accounts = [
-            {
-                "account": bank_account,
+        cheque_debits = debits_by_cheque.get(cheque_no, [])
+        if not cheque_debits:
+            frappe.throw(_("Cheque {0}: add at least one debit entry.").format(cheque_no))
+        debit_total = sum((_decimal(row.amount) for row in cheque_debits), Decimal("0"))
+        accounts = []
+        for debit in cheque_debits:
+            account_row = {
+                "account": debit.account,
                 "account_currency": company_currency,
                 "exchange_rate": 1,
-                "debit_in_account_currency": float(net),
-                "user_remark": _("Cheque {0} - {1}").format(cheque_no, customer),
+                "debit_in_account_currency": float(_decimal(debit.amount)),
+                "user_remark": debit.get("remark") or _("Cheque {0}").format(cheque_no),
             }
-        ]
-        if ewt:
-            accounts.append(
-                {
-                    "account": ewt_account,
-                    "account_currency": company_currency,
-                    "exchange_rate": 1,
-                    "debit_in_account_currency": float(ewt),
-                    "user_remark": _("EWT for cheque {0}").format(cheque_no),
-                }
-            )
-        for name, amount in by_invoice.items():
+            if debit.get("party_type") and debit.get("party"):
+                account_row.update({"party_type": debit.party_type, "party": debit.party})
+            accounts.append(account_row)
+
+        for name, amount in credit_by_invoice.items():
             invoice = invoices[name]
             accounts.append(
                 {
@@ -177,7 +171,7 @@ def create_journal_entries(rows, company, bank_account, ewt_account=None):
                     "account_currency": company_currency,
                     "exchange_rate": 1,
                     "party_type": "Customer",
-                    "party": customer,
+                    "party": invoice.customer,
                     "credit_in_account_currency": float(amount),
                     "reference_type": "Sales Invoice",
                     "reference_name": name,
@@ -185,18 +179,49 @@ def create_journal_entries(rows, company, bank_account, ewt_account=None):
                 }
             )
 
+        difference = debit_total - invoice_total
+        if abs(difference) > Decimal("0.005"):
+            if not write_off_account:
+                frappe.throw(
+                    _("Cheque {0}: debit and invoice totals differ by {1}; select a Write-off Account.").format(
+                        cheque_no, abs(difference)
+                    )
+                )
+            write_off_row = {
+                "account": write_off_account,
+                "account_currency": company_currency,
+                "exchange_rate": 1,
+                "user_remark": _("Write-off for cheque {0}").format(cheque_no),
+            }
+            if difference > 0:
+                write_off_row["credit_in_account_currency"] = float(difference)
+            else:
+                write_off_row["debit_in_account_currency"] = float(abs(difference))
+            accounts.append(write_off_row)
+
         first = cheque_rows[0]
+        remark_lines = [
+            "\t".join(
+                [
+                    cheque_no,
+                    _display_date(posting_date),
+                    _display_date(row.cheque_date),
+                    row.invoice_no,
+                    "",
+                    "{:,.2f}".format(Decimal(str(row.invoice_amount))),
+                ]
+            )
+            for row in cheque_rows
+        ]
         doc = frappe.get_doc(
             {
                 "doctype": "Journal Entry",
                 "voucher_type": "Bank Entry",
                 "company": company,
-                "posting_date": getdate(first.get("posting_date") or nowdate()),
+                "posting_date": getdate(posting_date),
                 "cheque_no": cheque_no,
                 "cheque_date": getdate(first.cheque_date or nowdate()),
-                "user_remark": _("Customer {0}; cheque {1}; gross {2}; EWT {3}; net {4}").format(
-                    customer, cheque_no, gross, ewt, net
-                ),
+                "user_remark": "\n".join(remark_lines),
                 "accounts": accounts,
             }
         )
@@ -263,6 +288,11 @@ def _clean_id(value):
 
 def _decimal(value):
     return Decimal(str(value or 0).replace(",", ""))
+
+
+def _display_date(value):
+    value = getdate(value)
+    return "{0}/{1}/{2}".format(value.month, value.day, value.year)
 
 
 def _require_create_permission():

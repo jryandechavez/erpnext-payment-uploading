@@ -7,6 +7,7 @@ class PaymentUpload {
 	constructor(page) {
 		this.page = page;
 		this.rows = [];
+		this.debit_rows = [];
 		this.make();
 	}
 
@@ -14,19 +15,20 @@ class PaymentUpload {
 		this.$body = $(`<div class="payment-upload">
 			<div class="frappe-card p-4 mb-4"><div class="row"></div></div>
 			<div class="summary mb-3"></div><div class="preview"></div>
+			<div class="debit-section mt-4"></div>
 		</div>`).appendTo(this.page.main);
 		const $row = this.$body.find(".row");
-		this.company = this.control($row, "Company", "company", __("Company"), true);
-		this.bank_account = this.control($row, "Link", "bank_account", __("Bank / Cash Account"), true, "Account", {
-			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0, account_type: ["in", ["Bank", "Cash"]] } }),
-		});
-		this.ewt = this.control($row, "Link", "ewt_account", __("EWT Account"), false, "Account", {
+		this.company = this.control($row, "Link", "company", __("Company"), true, "Company");
+		this.posting_date = this.control($row, "Date", "posting_date", __("Posting Date"), true);
+		this.posting_date.set_value(frappe.datetime.get_today());
+		this.write_off = this.control($row, "Link", "write_off_account", __("Write-off Account"), false, "Account", {
 			get_query: () => ({ filters: { company: this.company.get_value(), is_group: 0 } }),
+			onchange: () => this.update_balance_state(),
 		});
 		this.file = this.control($row, "Attach", "payment_file", __("CSV / XLSX File"), true, null, {
 			onchange: () => this.preview(),
 		});
-		this.create_button = this.page.add_inner_button(__("Create Draft Journal Entries"), () => this.confirm_create());
+		this.create_button = this.page.add_inner_button(__("Create Journal Entries"), () => this.confirm_create());
 		this.create_button.addClass("btn-primary").prop("disabled", true);
 	}
 
@@ -48,8 +50,9 @@ class PaymentUpload {
 				args: { file_url: this.file.get_value() },
 			});
 			this.rows = message.rows;
+			this.sync_debit_rows();
 			this.render(message.invalid_rows);
-			this.create_button.prop("disabled", message.invalid_rows > 0 || !message.rows.length);
+			this.update_balance_state(message.invalid_rows);
 		} finally {
 			frappe.dom.unfreeze();
 		}
@@ -76,29 +79,131 @@ class PaymentUpload {
 			<th>${__("Customer")}</th><th>${__("Outstanding")}</th><th>${__("Invoice Amount")}</th><th>${__("EWT")}</th>
 			<th>${__("Cheque Amount")}</th><th>${__("Status")}</th><th>${__("Message")}</th></tr></thead><tbody>${rows}</tbody>
 		</table></div>`);
+		this.render_debits();
+	}
+
+	sync_debit_rows() {
+		const cheques = [...new Set(this.rows.map((row) => row.cheque_no))];
+		this.debit_rows = this.debit_rows.filter((row) => cheques.includes(row.cheque_no));
+		for (const cheque_no of cheques) {
+			if (!this.debit_rows.some((row) => row.cheque_no === cheque_no)) {
+				const net = this.rows.filter((row) => row.cheque_no === cheque_no)
+					.reduce((total, row) => total + flt(row.cheque_amount), 0);
+				this.debit_rows.push({ cheque_no, amount: net, controls: null });
+			}
+		}
+	}
+
+	add_debit(cheque_no) {
+		this.debit_rows.push({ cheque_no, amount: 0, controls: null });
+		this.render_debits();
+	}
+
+	render_debits() {
+		const $section = this.$body.find(".debit-section").empty();
+		if (!this.rows.length) return;
+		$section.append(`<div class="d-flex justify-content-between align-items-center mb-2">
+			<h4 class="m-0">${__("Debit Entries and Balance Check")}</h4>
+			<span class="text-muted">${__("Add bank, EWT, receivable, or other debit lines per cheque.")}</span>
+		</div>`);
+		for (const cheque_no of [...new Set(this.rows.map((row) => row.cheque_no))]) {
+			const $card = $(`<div class="frappe-card p-3 mb-3">
+				<div class="d-flex justify-content-between"><strong>${__("Cheque")} ${frappe.utils.escape_html(cheque_no)}</strong>
+				<button class="btn btn-xs btn-default add-debit">${__("Add Debit")}</button></div>
+				<div class="debit-rows mt-2"></div><div class="balance mt-2"></div>
+			</div>`).appendTo($section);
+			$card.find(".add-debit").on("click", () => this.add_debit(cheque_no));
+			for (const row of this.debit_rows.filter((value) => value.cheque_no === cheque_no)) {
+				this.render_debit_row($card.find(".debit-rows"), row);
+			}
+		}
+		this.update_balance_state();
+	}
+
+	render_debit_row($parent, row) {
+		const $row = $('<div class="row align-items-end border-top pt-2 mb-2"></div>').appendTo($parent);
+		const make = (fieldtype, fieldname, label, options, width = "col-lg-2") => {
+			const $cell = $(`<div class="col-sm-6 ${width}"></div>`).appendTo($row);
+			return frappe.ui.form.make_control({ parent: $cell, df: { fieldtype, fieldname, label, options }, render_input: true });
+		};
+		const account = make("Link", "account", __("Account"), "Account", "col-lg-3");
+		account.get_query = () => ({ filters: { company: this.company.get_value(), is_group: 0 } });
+		const party_type = make("Select", "party_type", __("Party Type"), "\nCustomer\nSupplier\nEmployee");
+		const party = make("Link", "party", __("Party"), row.party_type || "Customer", "col-lg-3");
+		const amount = make("Currency", "amount", __("Debit Amount"), null, "col-lg-2");
+		const $remove = $('<div class="col-lg-2"><button class="btn btn-xs btn-danger mb-2">Remove</button></div>').appendTo($row);
+
+		account.set_value(row.account || "");
+		party_type.set_value(row.party_type || "");
+		party.set_value(row.party || "");
+		amount.set_value(row.amount || 0);
+		row.controls = { account, party_type, party, amount };
+		const changed = () => this.update_balance_state();
+		account.df.onchange = changed;
+		amount.df.onchange = changed;
+		party_type.df.onchange = () => {
+			party.df.options = party_type.get_value() || "Customer";
+			party.set_value("");
+			party.refresh();
+			changed();
+		};
+		party.df.onchange = changed;
+		$remove.find("button").on("click", () => {
+			this.debit_rows = this.debit_rows.filter((value) => value !== row);
+			this.render_debits();
+		});
+	}
+
+	get_debits() {
+		return this.debit_rows.map((row) => ({
+			cheque_no: row.cheque_no,
+			account: row.controls?.account.get_value() || row.account || "",
+			party_type: row.controls?.party_type.get_value() || row.party_type || "",
+			party: row.controls?.party.get_value() || row.party || "",
+			amount: flt(row.controls?.amount.get_value() ?? row.amount),
+		}));
+	}
+
+	update_balance_state(invalid_rows) {
+		const invalid = invalid_rows ?? this.rows.filter((row) => row.status === "Invalid").length;
+		let balanced = Boolean(this.rows.length);
+		for (const cheque_no of [...new Set(this.rows.map((row) => row.cheque_no))]) {
+			const invoice_credits = new Map();
+			this.rows.filter((row) => row.cheque_no === cheque_no)
+				.forEach((row) => invoice_credits.set(row.invoice_no, flt(row.outstanding)));
+			const credits = [...invoice_credits.values()].reduce((sum, amount) => sum + amount, 0);
+			const debits = this.get_debits().filter((row) => row.cheque_no === cheque_no).reduce((sum, row) => sum + flt(row.amount), 0);
+			const difference = debits - credits;
+			const can_write_off = Math.abs(difference) < 0.005 || Boolean(this.write_off.get_value());
+			const complete = this.get_debits().filter((row) => row.cheque_no === cheque_no)
+				.every((row) => row.account && row.amount > 0 && ((!row.party_type && !row.party) || (row.party_type && row.party)));
+			balanced = balanced && can_write_off && complete;
+			this.$body.find(".debit-section .frappe-card").filter((_, card) => $(card).find("strong").text().endsWith(cheque_no))
+				.find(".balance").html(`<span class="indicator ${can_write_off ? "green" : "orange"}">
+				${__("Debits")}: ${format_currency(debits)} · ${__("Invoice Credits")}: ${format_currency(credits)} ·
+				${__("Write-off")}: ${format_currency(Math.abs(difference))} ${difference >= 0 ? __("Credit") : __("Debit")}</span>`);
+		}
+		this.create_button.prop("disabled", invalid > 0 || !balanced);
 	}
 
 	confirm_create() {
-		for (const field of [this.company, this.bank_account, this.file]) {
+		for (const field of [this.company, this.posting_date, this.file]) {
 			if (!field.get_value()) {
 				frappe.msgprint(__("Please complete all required fields."));
 				return;
 			}
 		}
-		if (this.rows.some((row) => row.ewt_amount && !this.ewt.get_value())) {
-			frappe.msgprint(__("Select an EWT Account before creating entries."));
-			return;
-		}
-		frappe.confirm(__("Create one draft Journal Entry per customer and cheque?"), async () => {
+		frappe.confirm(__("Create balanced draft Journal Entries and open the first entry?"), async () => {
 			const { message } = await frappe.call({
 				method: "erpnext_payment_uploading.erpnext_payment_uploading.page.payment_upload.payment_upload.create_journal_entries",
 				args: {
-					rows: this.rows, company: this.company.get_value(), bank_account: this.bank_account.get_value(),
-					ewt_account: this.ewt.get_value(),
+					rows: this.rows, debits: this.get_debits(), company: this.company.get_value(),
+					posting_date: this.posting_date.get_value(), write_off_account: this.write_off.get_value(),
 				},
 				freeze: true, freeze_message: __("Creating draft Journal Entries..."),
 			});
 			frappe.msgprint(__("Created {0} draft Journal Entries: {1}", [message.count, message.journal_entries.join(", ")]));
+			if (message.journal_entries.length) frappe.set_route("Form", "Journal Entry", message.journal_entries[0]);
 		});
 	}
 }
