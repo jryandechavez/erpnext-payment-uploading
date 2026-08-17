@@ -25,8 +25,12 @@ def preview(file_url):
             limit_page_length=0,
         )
     }
+    total_ewt = _money(sum((Decimal(str(row.ewt_amount)) for row in rows), Decimal("0")))
+    allocated_ewt = Decimal("0")
     result = []
-    for row in rows:
+    for index, row in enumerate(rows):
+        row_ewt = total_ewt - allocated_ewt if index == len(rows) - 1 else _money(row.ewt_amount)
+        allocated_ewt += row_ewt
         invoice = invoices.get(row.invoice_no)
         errors, warnings = [], []
         if not row.cheque_no:
@@ -49,7 +53,7 @@ def preview(file_url):
                 **row,
                 "invoice_amount": float(row.invoice_amount),
                 "basis_amount": float(row.basis_amount),
-                "ewt_amount": float(row.ewt_amount),
+                "ewt_amount": float(row_ewt),
                 "cheque_amount": float(row.cheque_amount),
                 "difference_amount": float(row.difference_amount),
                 "customer": invoice.customer if invoice else None,
@@ -57,7 +61,7 @@ def preview(file_url):
                 "currency": invoice.currency if invoice else None,
                 "outstanding": flt(invoice.outstanding_amount) if invoice else 0,
                 "write_off_amount": float(
-                    _money(invoice.outstanding_amount) - _money(row.invoice_amount) - _money(row.ewt_amount)
+                    _money(invoice.outstanding_amount) - _money(row.invoice_amount) - row_ewt
                 )
                 if invoice
                 else 0,
@@ -144,15 +148,19 @@ def create_journal_entries(
     # an invoice-level audit value in User Remark, not a grouping key.
     input_rows.sort(key=lambda row: row.row_no or 0)
     credit_by_invoice = OrderedDict()
-    invoice_total = Decimal("0")
     for row in input_rows:
         if row.invoice_no not in credit_by_invoice:
             invoice = all_invoices[row.invoice_no]
             outstanding = _money(invoice.outstanding_amount)
             if outstanding <= 0:
                 frappe.throw(_("Invoice {0} has no outstanding balance.").format(row.invoice_no))
-            credit_by_invoice[row.invoice_no] = outstanding
-            invoice_total += outstanding
+            credit_by_invoice[row.invoice_no] = {
+                "outstanding": outstanding,
+                "paid": Decimal("0"),
+                "ewt_raw": Decimal("0"),
+            }
+        credit_by_invoice[row.invoice_no]["paid"] += Decimal(str(row.invoice_amount))
+        credit_by_invoice[row.invoice_no]["ewt_raw"] += Decimal(str(row.ewt_amount))
 
     debit_rows = [frappe._dict(row) for row in debits]
     for debit in debit_rows:
@@ -177,7 +185,18 @@ def create_journal_entries(
             account_row.update({"party_type": debit.party_type, "party": debit.party})
         accounts.append(account_row)
 
-    for name, amount in credit_by_invoice.items():
+    invoice_names_in_order = list(credit_by_invoice)
+    allocated_ewt = Decimal("0")
+    for index, name in enumerate(invoice_names_in_order):
+        values = credit_by_invoice[name]
+        values["ewt"] = (
+            ewt_total - allocated_ewt
+            if index == len(invoice_names_in_order) - 1
+            else _money(values["ewt_raw"])
+        )
+        allocated_ewt += values["ewt"]
+
+    for name, values in credit_by_invoice.items():
         invoice = all_invoices[name]
         accounts.append(
             {
@@ -186,7 +205,7 @@ def create_journal_entries(
                 "exchange_rate": 1,
                 "party_type": "Customer",
                 "party": invoice.customer,
-                "credit_in_account_currency": float(amount),
+                "credit_in_account_currency": float(values["outstanding"]),
                 "reference_type": "Sales Invoice",
                 "reference_name": name,
                 "reference_due_date": invoice.due_date,
@@ -194,13 +213,23 @@ def create_journal_entries(
             }
         )
 
-    difference = paid_debit_total + ewt_total - invoice_total
-    if abs(difference) > Decimal("0.005"):
+    # Write-off is calculated and tagged per invoice. Multiple invoice
+    # differences therefore produce multiple Journal Entry Account rows.
+    for name, values in credit_by_invoice.items():
+        invoice = all_invoices[name]
+        difference = _money(values["paid"]) + values["ewt"] - values["outstanding"]
+        if abs(difference) <= Decimal("0.005"):
+            continue
         write_off_row = {
             "account": write_off_account,
             "account_currency": company_currency,
             "exchange_rate": 1,
-            "user_remark": _("Write-off"),
+            "party_type": "Customer",
+            "party": invoice.customer,
+            "reference_type": "Sales Invoice",
+            "reference_name": name,
+            "reference_due_date": invoice.due_date,
+            "user_remark": _("Write-off for {0}").format(name),
         }
         if difference > 0:
             write_off_row["credit_in_account_currency"] = float(difference)
