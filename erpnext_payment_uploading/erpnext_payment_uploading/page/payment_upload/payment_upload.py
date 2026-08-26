@@ -224,19 +224,14 @@ def create_journal_entries(
             "account": write_off_account,
             "account_currency": company_currency,
             "exchange_rate": 1,
-            # ERPNext only permits a Sales Invoice reference when both Party
-            # and Account match the invoice's Customer and Debit To account.
-            # A write-off account cannot satisfy that rule, so retain the
-            # per-invoice audit tag in User Remark instead.
+            "party_type": "Customer",
+            "party": invoice.customer,
+            "reference_type": "Sales Invoice",
+            "reference_name": name,
+            "reference_due_date": invoice.due_date,
             "user_remark": _("Write-off for Sales Invoice {0}; Customer {1}; Due {2}").format(
                 name, invoice.customer, invoice.due_date or ""
             ),
-            # The standard reference fields cannot be used on a write-off
-            # account because ERPNext requires them to match the invoice's
-            # receivable account and party. This dedicated Link field keeps
-            # every write-off row directly attached to its Sales Invoice.
-            "custom_write_off_sales_invoice": name,
-            "custom_write_off_customer": invoice.customer,
         }
         if difference > 0:
             write_off_row["credit_in_account_currency"] = float(difference)
