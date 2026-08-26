@@ -231,6 +231,12 @@ def create_journal_entries(
             "user_remark": _("Write-off for Sales Invoice {0}; Customer {1}; Due {2}").format(
                 name, invoice.customer, invoice.due_date or ""
             ),
+            # The standard reference fields cannot be used on a write-off
+            # account because ERPNext requires them to match the invoice's
+            # receivable account and party. This dedicated Link field keeps
+            # every write-off row directly attached to its Sales Invoice.
+            "custom_write_off_sales_invoice": name,
+            "custom_write_off_customer": invoice.customer,
         }
         if difference > 0:
             write_off_row["credit_in_account_currency"] = float(difference)

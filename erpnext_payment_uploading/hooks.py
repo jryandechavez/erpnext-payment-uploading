@@ -6,3 +6,9 @@ app_email = ""
 app_license = "MIT"
 
 required_apps = ["erpnext"]
+
+# Keep the invoice-level write-off tag available on both fresh installs and
+# upgrades. ``after_migrate`` handles existing production sites after pull +
+# ``bench migrate``.
+after_install = "erpnext_payment_uploading.setup.install.ensure_custom_fields"
+after_migrate = "erpnext_payment_uploading.setup.install.ensure_custom_fields"
