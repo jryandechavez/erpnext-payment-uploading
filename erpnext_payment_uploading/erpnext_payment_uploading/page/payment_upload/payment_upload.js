@@ -238,7 +238,7 @@ class PaymentUpload {
 		const batch_matches = Math.abs(uploaded_paid - expected_paid) < 0.005;
 		let balanced = Boolean(this.rows.length) && batch_matches;
 		{
-			const invoice_credits = new Map(this.rows.map((row) => [row.invoice_no, flt(row.outstanding)]));
+			const invoice_credits = new Map(this.rows.map((row) => [row.invoice_no, flt(row.paid_amount)]));
 			const credits = [...invoice_credits.values()].reduce((sum, amount) => sum + amount, 0);
 			const paid_debits = this.get_debits().reduce((sum, row) => sum + flt(row.amount), 0);
 			const ewt = Math.round((this.rows.reduce((sum, row) => sum + flt(row.ewt_amount), 0) + Number.EPSILON) * 100) / 100;
